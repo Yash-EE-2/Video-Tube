@@ -17,10 +17,10 @@ const registerUser = asyncHandler(async (req, res) => {
     //send response
 
     const {fullName, email, username, password} = req.body;
-    console.log("name: ", fullName);
-    console.log("email: ", email);
-    console.log("username: ", username);
-    console.log("password: ", password);
+    // console.log("name: ", fullName);
+    // console.log("email: ", email);
+    // console.log("username: ", username);
+    // console.log("password: ", password);
 
     //validation
     if(
@@ -29,8 +29,8 @@ const registerUser = asyncHandler(async (req, res) => {
         throw new ApiError(400, "All fields are required");
     }
 
-    //check if user already exists: username,email
-    const existedUser = User.findOne({
+    // check if user already exists: username,email
+    const existedUser = await User.findOne({
         $or: [{ username: username }, { email: email }]
     });
 
@@ -38,7 +38,7 @@ const registerUser = asyncHandler(async (req, res) => {
     if(existedUser){
         throw new ApiError(400, "User with email or username already exists");
     }
-    
+    // console.log(req.files);
 
     //check for avatar and coverImage upload
     const avatarLocalPath = req.files?.avatar?.[0]?.path;
@@ -49,11 +49,12 @@ const registerUser = asyncHandler(async (req, res) => {
     }
 
     const avatar = await uploadOnCloudinary(avatarLocalPath);
-    const coverImage = await uploadOnCloudinary(coverImageLocalPath);
 
     if(!avatar){
         throw new ApiError(500, "Error in uploading avatar");
     }
+
+    const coverImage = await uploadOnCloudinary(coverImageLocalPath);
 
     //create user object after all validation
     const user = await User.create({
@@ -62,12 +63,12 @@ const registerUser = asyncHandler(async (req, res) => {
         coverImage: coverImage?.url ||"",
         email,
         password,
-        username: username.tolowercase(),
+        username: username.toLowerCase()
     });
 
     //if user is created successfully
     //remove password and refresh token field from response
-    const createdUser = User.findById(user._id).select(
+    const createdUser = await User.findById(user._id).select(
         "-password -refreshToken"
     )
 
@@ -76,7 +77,7 @@ const registerUser = asyncHandler(async (req, res) => {
     }
 
     return res.status(201).json(
-        new Apiresponse(200, createdUser, "User registered successfully")
+        new ApiResponse(200, createdUser, "User registered successfully")
     )
 })
 
