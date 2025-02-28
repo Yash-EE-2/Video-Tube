@@ -467,6 +467,61 @@ const getUserChannelprofile = asyncHandler(async (req, res) => {
     )
 })
 
+const getWatchHistory = asyncHandler(async (req, res) => {
+    const user = await User.aggregate([
+        {
+            $match: {
+                _id: new mongoose.Types.ObjectId(req.user?._id)
+            }
+        },
+        {
+            $lookup:{
+                from: "videos",
+                localField: "watchHistory",
+                foreignField: "_id",
+                as: "watchHistory",
+                pipeline: [ //subpipline to get owner details
+                    {
+                        $lookup:{
+                            from: "users",
+                            localField: "owner",
+                            foreignField: "_id",
+                            as: "owner",
+                            pipeline: [ //subpipline to project required owner details
+                                {
+                                    $project: {
+                                        fullName: 1,
+                                        username: 1,
+                                        avatar: 1
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    { //another subpipline to project required owner details as a single object
+                        $addFields:{
+                            owner: { 
+                                $first: "$owner"
+                                // $arrayElemAt: ["$owner", 0]
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    ])
+
+    return res
+    .status(200)
+    .json(
+        new ApiResponse(
+            200,
+            user[0]?.watchHistory, //to show only watch history from user
+            "Watch History fetched successfully"
+        )
+    )
+})
+
 export {
     registerUser,
     loginUser,
@@ -477,5 +532,6 @@ export {
     updateAccountDetails,
     updateUserAvatar,
     updateUserCoverImage,
-    getUserChannelprofile
+    getUserChannelprofile,
+    getWatchHistory
 };
