@@ -32,6 +32,11 @@ const userSchema = new Schema(
         coverImage: {
             type: String,
         },
+        description: {
+            type: String,
+            default: "",
+        },
+        links: [linkSchema],
         watchHistory: {
             type: Schema.Types.ObjectId,
             ref: "Video",
