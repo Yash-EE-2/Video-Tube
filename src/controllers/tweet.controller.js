@@ -1,45 +1,123 @@
-import mongoose, {isValidObjectId} from "mongoose"
-import {Playlist} from "../models/playlist.model.js"
-import { Video } from "../models/video.model.js"
-import {ApiError} from "../utils/ApiError.js"
-import {ApiResponse} from "../utils/ApiResponse.js"
-import {asyncHandler} from "../utils/asyncHandler.js"
+import mongoose, { isValidObjectId } from "mongoose";
+import { Tweet } from "../models/tweet.model.js";
+import { Like } from "../models/like.model.js";
+import { Subscription } from "../models/subscription.model.js";
+import { ApiError } from "../utils/ApiError.js";
+import { ApiResponse } from "../utils/ApiResponse.js";
+import { asyncHandler } from "../utils/asyncHandler.js";
 
+const createTweet = asyncHandler(async (req, res) => {
+  const { tweet } = req.body;
 
-const createPlaylist = asyncHandler(async (req, res) => {
-    const {name, description} = req.body
-    
-    if(!name || !description){
-        throw new ApiError(400, "Name and description are required")
-    }
+  if (!tweet) throw new ApiError(400, "Tweet content required");
 
-    const playlist = await Playlist.create({
-        name: name,
-        description:description,
-        owner: req.user._id,
-    })
+  const tweetRes = await Tweet.create({ content: tweet, owner: req.user?._id });
 
-    if(!playlist){
-        throw new ApiError(500, "Could not create playlist")
-    }
+  if (!tweetRes) throw new ApiError(500, "Error occured while creating tweet");
 
-    res.status(201).json(new ApiResponse(200, playlist, "playlist created successfully"))
+  let newTweet = {
+    ...tweetRes._doc,
+    owner: {
+      fullName: req.user?.fullName,
+      username: req.user?.username,
+      avatar: req.user?.avatar,
+    },
+    totalDisLikes: 0,
+    totalLikes: 0,
+    isLiked: false,
+    isDisLiked: false,
+  };
 
-})
+  return res
+    .status(200)
+    .json(new ApiResponse(200, newTweet, "tweet created successfully"));
+});
 
-const getUserPlaylists = asyncHandler(async (req, res) => {
+const getUserTweets = asyncHandler(async (req, res) => {
   const { userId } = req.params;
+
   if (!isValidObjectId(userId))
-    throw new ApiError(400, "Valid userId required");
+    throw new ApiError(400, "Invalid userId: " + userId);
 
-  // THINKME : playlist thumbnail
-
-  const playlists = await Playlist.aggregate([
+  const allTweets = await Tweet.aggregate([
     {
       $match: {
         owner: new mongoose.Types.ObjectId(userId),
       },
     },
+    // sort by latest
+    {
+      $sort: {
+        createdAt: -1,
+      },
+    },
+    // fetch likes of tweet
+    {
+      $lookup: {
+        from: "likes",
+        localField: "_id",
+        foreignField: "tweet",
+        as: "likes",
+        pipeline: [
+          {
+            $match: {
+              liked: true,
+            },
+          },
+          {
+            $group: {
+              _id: "liked",
+              owners: { $push: "$likedBy" },
+            },
+          },
+        ],
+      },
+    },
+    {
+      $lookup: {
+        from: "likes",
+        localField: "_id",
+        foreignField: "tweet",
+        as: "dislikes",
+        pipeline: [
+          {
+            $match: {
+              liked: false,
+            },
+          },
+          {
+            $group: {
+              _id: "liked",
+              owners: { $push: "$likedBy" },
+            },
+          },
+        ],
+      },
+    },
+    // Reshape Likes and dislikes
+    {
+      $addFields: {
+        likes: {
+          $cond: {
+            if: {
+              $gt: [{ $size: "$likes" }, 0],
+            },
+            then: { $first: "$likes.owners" },
+            else: [],
+          },
+        },
+        dislikes: {
+          $cond: {
+            if: {
+              $gt: [{ $size: "$dislikes" }, 0],
+            },
+            then: { $first: "$dislikes.owners" },
+            else: [],
+          },
+        },
+      },
+    },
+    // get owner details
     {
       $lookup: {
         from: "users",
@@ -49,26 +127,9 @@ const getUserPlaylists = asyncHandler(async (req, res) => {
         pipeline: [
           {
             $project: {
-              fullName: 1,
-              avatar: 1,
               username: 1,
-              views: 1,
-            },
-          },
-        ],
-      },
-    },
-    {
-      $lookup: {
-        from: "videos",
-        localField: "videos",
-        foreignField: "_id",
-        as: "videos",
-        pipeline: [
-          {
-            $project: {
-              thumbnail: 1,
-              views: 1,
+              avatar: 1,
+              fullName: 1,
             },
           },
         ],
@@ -79,278 +140,30 @@ const getUserPlaylists = asyncHandler(async (req, res) => {
     },
     {
       $project: {
-        name: 1,
-        description: 1,
-        owner: 1,
-        thumbnail: 1,
-        videosCount: 1,
+        content: 1,
         createdAt: 1,
         updatedAt: 1,
-        thumbnail: {
-          $first: "$videos.thumbnail",
-        },
-        videosCount: {
-          $size: "$videos",
-        },
-        totalViews: {
-          $sum: "$videos.views",
-        },
-      },
-    },
-  ]);
-
-  return res
-    .status(200)
-    .json(new ApiResponse(200, playlists, "Playlist sent successfully"));
-});
-
-const getPlaylistById = asyncHandler(async (req, res) => {
-  const { playlistId } = req.params;
-  if (!isValidObjectId(playlistId)) {
-    throw new ApiError(400, "plese give valid playlist id");
-  }
-  const playlists = await Playlist.aggregate([
-    {
-      $match: {
-        _id: new mongoose.Types.ObjectId(playlistId),
-      },
-    },
-    {
-      $lookup: {
-        from: "videos",
-        localField: "videos",
-        foreignField: "_id",
-        as: "videos",
-        pipeline: [
-          {
-            $match: { isPublished: true },
-          },
-          {
-            $lookup: {
-              from: "users",
-              localField: "owner",
-              foreignField: "_id",
-              as: "owner",
-              pipeline: [
-                {
-                  $project: {
-                    username: 1,
-                    fullName: 1,
-                    avatar: 1,
-                  },
-                },
-              ],
-            },
-          },
-          {
-            $addFields: {
-              owner: {
-                $first: "$owner",
-              },
-            },
-          },
-        ],
-      },
-    },
-    {
-      $lookup: {
-        from: "users",
-        localField: "owner",
-        foreignField: "_id",
-        as: "owner",
-        pipeline: [
-          {
-            $project: {
-              username: 1,
-              fullName: 1,
-              avatar: 1,
-            },
-          },
-        ],
-      },
-    },
-    {
-      $addFields: {
-        owner: {
-          $first: "$owner",
-        },
-      },
-    },
-    {
-      $project: {
-        name: 1,
-        description: 1,
-        videos: 1,
         owner: 1,
-        thumbnail: 1,
-        videosCount: 1,
-        createdAt: 1,
-        updatedAt: 1,
-        thumbnail: {
-          $first: "$videos.thumbnail",
+        totalLikes: {
+          $size: "$likes",
         },
-        videosCount: {
-          $size: "$videos",
+        totalDisLikes: {
+          $size: "$dislikes",
         },
-        totalViews: {
-          $sum: "$videos.views",
-        },
-      },
-    },
-  ]);
-
-  return res
-    .status(200)
-    .json(new ApiResponse(200, playlists[0], "Playlist sent successfully"));
-});
-
-
-const addVideoToPlaylist = asyncHandler(async (req, res) => {
-  const { playlistId, videoId } = req.params;
-
-  if (!isValidObjectId(playlistId) || !isValidObjectId(videoId)) {
-    throw new ApiError(400, "Please give valid id");
-  }
-
-  const playlist = await Playlist.findByIdAndUpdate(
-    playlistId,
-    {
-      $addToSet: {
-        videos: videoId,
-      },
-    },
-    {
-      new: true,
-    }
-  );
-
-  if (!playlist)
-    throw new ApiError(500, "Error while adding video to playlist");
-
-  return res
-    .status(200)
-    .json(
-      new ApiResponse(
-        200,
-        { isAdded: true },
-        "Video added to playlist successfully"
-      )
-    );
-});
-
-const removeVideoFromPlaylist = asyncHandler(async (req, res) => {
-  const { playlistId, videoId } = req.params;
-  if (!isValidObjectId(playlistId) || !isValidObjectId(videoId)) {
-    throw new ApiError(400, "plaese give valid video or playlist id");
-  }
-
-  const playlist = await Playlist.findByIdAndUpdate(
-    playlistId,
-    {
-      $pull: {
-        videos: videoId,
-      },
-    },
-    {
-      new: true,
-    }
-  );
-
-  if (!playlist)
-    throw new ApiError(500, "Error while removing video from playlist");
-
-  return res
-    .status(200)
-    .json(
-      new ApiResponse(
-        200,
-        { isSuccess: true },
-        "Video removed from playlist successfully"
-      )
-    );
-});
-
-const deletePlaylist = asyncHandler(async (req, res) => {
-    const { playlistId } = req.params;
-
-  if (!playlistId) {
-    throw new ApiError(400, "Playlist Id not found");
-  }
-  if (!mongoose.Types.ObjectId.isValid(playlistId)) {
-    throw new ApiError(400, "Playlist Id not valid");
-  }
-
-  const deletedPlaylist = await Playlist.findByIdAndDelete(playlistId);
-  if (!deletedPlaylist) {
-    throw new ApiError(400, "Playlist Not found");
-  }
-  return res
-    .status(200)
-    .json(
-      new ApiResponse(200, deletedPlaylist, "playlist deleted successfully")
-    );
-    
-})
-
-const updatePlaylist = asyncHandler(async (req, res) => {
-    const { playlistId } = req.params;
-    const { name, description } = req.body;
-  
-    if (!playlistId) {
-      throw new ApiError(400, "Playlist Id not found");
-    }
-    if (!mongoose.Types.ObjectId.isValid(playlistId)) {
-      throw new ApiError(400, "Playlist Id not valid");
-    }
-  
-    if (!name && !description) {
-      throw new ApiError(400, "Name or description must be provided");
-    }
-  
-    const playlist = await Playlist.findById(playlistId);
-    if (!playlist) {
-      throw new ApiError(400, "Playlist not found");
-    }
-  
-    const updatedPlaylist = await Playlist.findByIdAndUpdate(
-      playlist._id,
-      {
-        name: name ? name : playlist.name,
-        description: description ? description : playlist.description,
-      },
-      { new: true }
-    );
-  
-    if (!updatePlaylist) {
-      throw new ApiError(500, "playlist cannot be updated");
-    }
-    return res
-      .status(200)
-      .json(
-        new ApiResponse(200, updatedPlaylist, "playlist updated successfully")
-      );
-})
-
-// this function is check the user videos is are avlaible in playlists or not
-
-const getVideoSavePlaylists = asyncHandler(async (req, res) => {
-  const { videoId } = req.params;
-
-  if (!isValidObjectId(videoId))
-    throw new ApiError(400, "Valid videoId required");
-
-  const playlists = await Playlist.aggregate([
-    {
-      $match: {
-        owner: new mongoose.Types.ObjectId(req.user?._id),
-      },
-    },
-    {
-      $project: {
-        name: 1,
-        isVideoPresent: {
+        isLiked: {
           $cond: {
-            if: { $in: [new mongoose.Types.ObjectId(videoId), "$videos"] },
+            if: {
+              $in: [req.user?._id, "$likes"],
+            },
+            then: true,
+            else: false,
+          },
+        },
+        isDisLiked: {
+          $cond: {
+            if: {
+              $in: [req.user?._id, "$dislikes"],
+            },
             then: true,
             else: false,
           },
@@ -361,17 +174,347 @@ const getVideoSavePlaylists = asyncHandler(async (req, res) => {
 
   return res
     .status(200)
-    .json(new ApiResponse(200, playlists, "Playlists sent successfully"));
+    .json(new ApiResponse(200, allTweets, "all tweets send successfully"));
 });
 
+const getAllTweets = asyncHandler(async (req, res) => {
+  const allTweets = await Tweet.aggregate([
+    // sort by latest
+    {
+      $sort: {
+        createdAt: -1,
+      },
+    },
+    // fetch likes of tweet
+    {
+      $lookup: {
+        from: "likes",
+        localField: "_id",
+        foreignField: "tweet",
+        as: "likes",
+        pipeline: [
+          {
+            $match: {
+              liked: true,
+            },
+          },
+          {
+            $group: {
+              _id: "liked",
+              owners: { $push: "$likedBy" },
+            },
+          },
+        ],
+      },
+    },
+    {
+      $lookup: {
+        from: "likes",
+        localField: "_id",
+        foreignField: "tweet",
+        as: "dislikes",
+        pipeline: [
+          {
+            $match: {
+              liked: false,
+            },
+          },
+          {
+            $group: {
+              _id: "liked",
+              owners: { $push: "$likedBy" },
+            },
+          },
+        ],
+      },
+    },
+    // Reshape Likes and dislikes
+    {
+      $addFields: {
+        likes: {
+          $cond: {
+            if: {
+              $gt: [{ $size: "$likes" }, 0],
+            },
+            then: { $first: "$likes.owners" },
+            else: [],
+          },
+        },
+        dislikes: {
+          $cond: {
+            if: {
+              $gt: [{ $size: "$dislikes" }, 0],
+            },
+            then: { $first: "$dislikes.owners" },
+            else: [],
+          },
+        },
+      },
+    },
+    // get owner details
+    {
+      $lookup: {
+        from: "users",
+        localField: "owner",
+        foreignField: "_id",
+        as: "owner",
+        pipeline: [
+          {
+            $project: {
+              username: 1,
+              avatar: 1,
+              fullName: 1,
+            },
+          },
+        ],
+      },
+    },
+    {
+      $unwind: "$owner",
+    },
+    {
+      $project: {
+        content: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        owner: 1,
+        isOwner: {
+          $cond: {
+            if: { $eq: [req.user?._id, "$owner._id"] },
+            then: true,
+            else: false,
+          },
+        },
+        totalLikes: {
+          $size: "$likes",
+        },
+        totalDisLikes: {
+          $size: "$dislikes",
+        },
+        isLiked: {
+          $cond: {
+            if: {
+              $in: [req.user?._id, "$likes"],
+            },
+            then: true,
+            else: false,
+          },
+        },
+        isDisLiked: {
+          $cond: {
+            if: {
+              $in: [req.user?._id, "$dislikes"],
+            },
+            then: true,
+            else: false,
+          },
+        },
+      },
+    },
+  ]);
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, allTweets, "all tweets send successfully"));
+});
+
+const getAllUserFeedTweets = asyncHandler(async (req, res) => {
+  const subscriptions = await Subscription.find({ subscriber: req.user?._id });
+
+  const subscribedChannels = subscriptions.map((item) => item.channel);
+
+  const allTweets = await Tweet.aggregate([
+    {
+      $match: {
+        owner: {
+          $in: subscribedChannels,
+        },
+      },
+    },
+    // sort by latest
+    {
+      $sort: {
+        createdAt: -1,
+      },
+    },
+    // fetch likes of tweet
+    {
+      $lookup: {
+        from: "likes",
+        localField: "_id",
+        foreignField: "tweet",
+        as: "likes",
+        pipeline: [
+          {
+            $match: {
+              liked: true,
+            },
+          },
+          {
+            $group: {
+              _id: "liked",
+              owners: { $push: "$likedBy" },
+            },
+          },
+        ],
+      },
+    },
+    {
+      $lookup: {
+        from: "likes",
+        localField: "_id",
+        foreignField: "tweet",
+        as: "dislikes",
+        pipeline: [
+          {
+            $match: {
+              liked: false,
+            },
+          },
+          {
+            $group: {
+              _id: "liked",
+              owners: { $push: "$likedBy" },
+            },
+          },
+        ],
+      },
+    },
+    // Reshape Likes and dislikes
+    {
+      $addFields: {
+        likes: {
+          $cond: {
+            if: {
+              $gt: [{ $size: "$likes" }, 0],
+            },
+            then: { $first: "$likes.owners" },
+            else: [],
+          },
+        },
+        dislikes: {
+          $cond: {
+            if: {
+              $gt: [{ $size: "$dislikes" }, 0],
+            },
+            then: { $first: "$dislikes.owners" },
+            else: [],
+          },
+        },
+      },
+    },
+    // get owner details
+    {
+      $lookup: {
+        from: "users",
+        localField: "owner",
+        foreignField: "_id",
+        as: "owner",
+        pipeline: [
+          {
+            $project: {
+              username: 1,
+              avatar: 1,
+              fullName: 1,
+            },
+          },
+        ],
+      },
+    },
+    {
+      $unwind: "$owner",
+    },
+    {
+      $project: {
+        content: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        owner: 1,
+        isOwner: {
+          $cond: {
+            if: { $eq: [req.user?._id, "$owner._id"] },
+            then: true,
+            else: false,
+          },
+        },
+        totalLikes: {
+          $size: "$likes",
+        },
+        totalDisLikes: {
+          $size: "$dislikes",
+        },
+        isLiked: {
+          $cond: {
+            if: {
+              $in: [req.user?._id, "$likes"],
+            },
+            then: true,
+            else: false,
+          },
+        },
+        isDisLiked: {
+          $cond: {
+            if: {
+              $in: [req.user?._id, "$dislikes"],
+            },
+            then: true,
+            else: false,
+          },
+        },
+      },
+    },
+  ]);
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, allTweets, "all tweets send successfully"));
+});
+
+const updateTweet = asyncHandler(async (req, res) => {
+  const { tweetId } = req.params;
+  const { tweet } = req.body;
+  if (!isValidObjectId(tweetId)) throw new ApiError(400, "Invalid tweetId");
+  if (!tweet) throw new ApiError(400, "tweet content required");
+
+  const updatedTweet = await Tweet.findByIdAndUpdate(
+    tweetId,
+    {
+      $set: {
+        content: tweet,
+      },
+    },
+    {
+      new: true,
+    }
+  );
+  return res
+    .status(200)
+    .json(new ApiResponse(200, updatedTweet, "tweet updated successfully"));
+});
+
+const deleteTweet = asyncHandler(async (req, res) => {
+  const { tweetId } = req.params;
+
+  if (!isValidObjectId(tweetId)) throw new ApiError(400, "Invalid tweetId");
+
+  const findRes = await Tweet.findByIdAndDelete(tweetId);
+
+  if (!findRes) throw new ApiError(500, "tweet not found");
+
+  const deleteLikes = await Like.deleteMany({
+    tweet: new mongoose.Types.ObjectId(tweetId),
+  });
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, findRes, "tweet deleted successfully"));
+});
 
 export {
-    createPlaylist,
-    getUserPlaylists,
-    getPlaylistById,
-    addVideoToPlaylist,
-    removeVideoFromPlaylist,
-    deletePlaylist,
-    updatePlaylist,
-    getVideoSavePlaylists
-}
+  createTweet,
+  getAllTweets,
+  getUserTweets,
+  getAllUserFeedTweets,
+  updateTweet,
+  deleteTweet,
+};

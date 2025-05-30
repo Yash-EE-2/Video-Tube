@@ -1,151 +1,100 @@
-import mongoose, {isValidObjectId} from "mongoose"
-import {Playlist} from "../models/playlist.model.js"
-import { Video } from "../models/video.model.js"
-import {ApiError} from "../utils/ApiError.js"
-import {ApiResponse} from "../utils/ApiResponse.js"
-import {asyncHandler} from "../utils/asyncHandler.js"
+import mongoose, { isValidObjectId } from "mongoose";
+import { User } from "../models/user.model.js";
+import { Subscription } from "../models/subscription.model.js";
+import { ApiError } from "../utils/ApiError.js";
+import { ApiResponse } from "../utils/ApiResponse.js";
+import { asyncHandler } from "../utils/asyncHandler.js";
 
+const toggleSubscription = asyncHandler(async (req, res) => {
+  const { channelId } = req.params;
+  // wo user jiska channel he uski id
+  // channel -- hi -- user he
 
-const createPlaylist = asyncHandler(async (req, res) => {
-    const {name, description} = req.body
-    
-    if(!name || !description){
-        throw new ApiError(400, "Name and description are required")
-    }
+  if (!mongoose.Types.ObjectId.isValid(channelId)) {
+    throw new ApiError(400, "Invalid channel Id");
+  }
 
-    const playlist = await Playlist.create({
-        name: name,
-        description:description,
-        owner: req.user._id,
-    })
+  const channel = await User.findById(channelId);
+  //   then we have find in user database
 
-    if(!playlist){
-        throw new ApiError(500, "Could not create playlist")
-    }
+  if (!channel) {
+    throw new ApiError(400, "channel not found");
+  }
 
-    res.status(201).json(new ApiResponse(200, playlist, "playlist created successfully"))
+  const existingSubscrption = await Subscription.findOne({
+    subscriber: req.user?._id,
+    channel: channelId,
+  });
 
-})
+  console.log(existingSubscrption);
 
-const getUserPlaylists = asyncHandler(async (req, res) => {
-  const { userId } = req.params;
-  if (!isValidObjectId(userId))
-    throw new ApiError(400, "Valid userId required");
+  if (existingSubscrption) {
+    const unSubscribedChannel = await Subscription.findByIdAndDelete(
+      existingSubscrption._id
+    );
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(
+          200,
+          unSubscribedChannel,
+          "channel unsubscribed successfully"
+        )
+      );
+  } else {
+    const newSubscription = await Subscription.create({
+      subscriber: req.user._id,
+      channel: channelId,
+    });
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(200, newSubscription, "channel subscribed successfully")
+      );
+  }
+});
 
-  // THINKME : playlist thumbnail
+const getUserChannelSubscribers = asyncHandler(async (req, res) => {
+  const { channelId = req.user?._id } = req.params;
 
-  const playlists = await Playlist.aggregate([
+  if (!isValidObjectId(channelId)) throw new ApiError(400, "Invalid ChannelId");
+
+  const subscriberList = await Subscription.aggregate([
     {
       $match: {
-        owner: new mongoose.Types.ObjectId(userId),
+        channel: new mongoose.Types.ObjectId(channelId),
+      },
+    },
+    {
+      $lookup: {
+        from: "subscriptions",
+        localField: "channel",
+        foreignField: "subscriber",
+        as: "subscribedChannels",
       },
     },
     {
       $lookup: {
         from: "users",
-        localField: "owner",
+        localField: "subscriber",
         foreignField: "_id",
-        as: "owner",
+        as: "subscriber",
         pipeline: [
-          {
-            $project: {
-              fullName: 1,
-              avatar: 1,
-              username: 1,
-              views: 1,
-            },
-          },
-        ],
-      },
-    },
-    {
-      $lookup: {
-        from: "videos",
-        localField: "videos",
-        foreignField: "_id",
-        as: "videos",
-        pipeline: [
-          {
-            $project: {
-              thumbnail: 1,
-              views: 1,
-            },
-          },
-        ],
-      },
-    },
-    {
-      $unwind: "$owner",
-    },
-    {
-      $project: {
-        name: 1,
-        description: 1,
-        owner: 1,
-        thumbnail: 1,
-        videosCount: 1,
-        createdAt: 1,
-        updatedAt: 1,
-        thumbnail: {
-          $first: "$videos.thumbnail",
-        },
-        videosCount: {
-          $size: "$videos",
-        },
-        totalViews: {
-          $sum: "$videos.views",
-        },
-      },
-    },
-  ]);
-
-  return res
-    .status(200)
-    .json(new ApiResponse(200, playlists, "Playlist sent successfully"));
-});
-
-const getPlaylistById = asyncHandler(async (req, res) => {
-  const { playlistId } = req.params;
-  if (!isValidObjectId(playlistId)) {
-    throw new ApiError(400, "plese give valid playlist id");
-  }
-  const playlists = await Playlist.aggregate([
-    {
-      $match: {
-        _id: new mongoose.Types.ObjectId(playlistId),
-      },
-    },
-    {
-      $lookup: {
-        from: "videos",
-        localField: "videos",
-        foreignField: "_id",
-        as: "videos",
-        pipeline: [
-          {
-            $match: { isPublished: true },
-          },
           {
             $lookup: {
-              from: "users",
-              localField: "owner",
-              foreignField: "_id",
-              as: "owner",
-              pipeline: [
-                {
-                  $project: {
-                    username: 1,
-                    fullName: 1,
-                    avatar: 1,
-                  },
-                },
-              ],
+              from: "subscriptions",
+              localField: "_id",
+              foreignField: "channel",
+              as: "subscribersSubscribers",
             },
           },
           {
-            $addFields: {
-              owner: {
-                $first: "$owner",
+            $project: {
+              username: 1,
+              avatar: 1,
+              fullName: 1,
+              subscribersCount: {
+                $size: "$subscribersSubscribers",
               },
             },
           },
@@ -153,16 +102,67 @@ const getPlaylistById = asyncHandler(async (req, res) => {
       },
     },
     {
+      $unwind: {
+        path: "$subscriber",
+        preserveNullAndEmptyArrays: true,
+      },
+    },
+    {
+      $addFields: {
+        "subscriber.isSubscribed": {
+          $cond: {
+            if: {
+              $in: ["$subscriber._id", "$subscribedChannels.channel"],
+            },
+            then: true,
+            else: false,
+          },
+        },
+      },
+    },
+    {
+      $group: {
+        _id: "channel",
+        subscriber: {
+          $push: "$subscriber",
+        },
+      },
+    },
+  ]);
+
+  const subscribers =
+    subscriberList?.length > 0 ? subscriberList[0].subscriber : [];
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, subscribers, "Subscriber Sent Successfully"));
+});
+
+const getSubscribedChannels = asyncHandler(async (req, res) => {
+  const { subscriberId } = req.params;
+
+  if (!isValidObjectId(subscriberId))
+    throw new ApiError(400, "Invalid subscriberId");
+
+  const subscribedChannels = await Subscription.aggregate([
+    // get all subscribed channels`
+    {
+      $match: {
+        subscriber: new mongoose.Types.ObjectId(subscriberId),
+      },
+    },
+    // get channel details
+    {
       $lookup: {
         from: "users",
-        localField: "owner",
+        localField: "channel",
         foreignField: "_id",
-        as: "owner",
+        as: "channel",
         pipeline: [
           {
             $project: {
-              username: 1,
               fullName: 1,
+              username: 1,
               avatar: 1,
             },
           },
@@ -170,208 +170,53 @@ const getPlaylistById = asyncHandler(async (req, res) => {
       },
     },
     {
+      $unwind: "$channel",
+    },
+    // get channel's subscribers
+    {
+      $lookup: {
+        from: "subscriptions",
+        localField: "channel._id",
+        foreignField: "channel",
+        as: "channelSubscribers",
+      },
+    },
+    {
+      // logic if current user has subscribed the channel or not
       $addFields: {
-        owner: {
-          $first: "$owner",
-        },
-      },
-    },
-    {
-      $project: {
-        name: 1,
-        description: 1,
-        videos: 1,
-        owner: 1,
-        thumbnail: 1,
-        videosCount: 1,
-        createdAt: 1,
-        updatedAt: 1,
-        thumbnail: {
-          $first: "$videos.thumbnail",
-        },
-        videosCount: {
-          $size: "$videos",
-        },
-        totalViews: {
-          $sum: "$videos.views",
-        },
-      },
-    },
-  ]);
-
-  return res
-    .status(200)
-    .json(new ApiResponse(200, playlists[0], "Playlist sent successfully"));
-});
-
-
-const addVideoToPlaylist = asyncHandler(async (req, res) => {
-  const { playlistId, videoId } = req.params;
-
-  if (!isValidObjectId(playlistId) || !isValidObjectId(videoId)) {
-    throw new ApiError(400, "Please give valid id");
-  }
-
-  const playlist = await Playlist.findByIdAndUpdate(
-    playlistId,
-    {
-      $addToSet: {
-        videos: videoId,
-      },
-    },
-    {
-      new: true,
-    }
-  );
-
-  if (!playlist)
-    throw new ApiError(500, "Error while adding video to playlist");
-
-  return res
-    .status(200)
-    .json(
-      new ApiResponse(
-        200,
-        { isAdded: true },
-        "Video added to playlist successfully"
-      )
-    );
-});
-
-const removeVideoFromPlaylist = asyncHandler(async (req, res) => {
-  const { playlistId, videoId } = req.params;
-  if (!isValidObjectId(playlistId) || !isValidObjectId(videoId)) {
-    throw new ApiError(400, "plaese give valid video or playlist id");
-  }
-
-  const playlist = await Playlist.findByIdAndUpdate(
-    playlistId,
-    {
-      $pull: {
-        videos: videoId,
-      },
-    },
-    {
-      new: true,
-    }
-  );
-
-  if (!playlist)
-    throw new ApiError(500, "Error while removing video from playlist");
-
-  return res
-    .status(200)
-    .json(
-      new ApiResponse(
-        200,
-        { isSuccess: true },
-        "Video removed from playlist successfully"
-      )
-    );
-});
-
-const deletePlaylist = asyncHandler(async (req, res) => {
-    const { playlistId } = req.params;
-
-  if (!playlistId) {
-    throw new ApiError(400, "Playlist Id not found");
-  }
-  if (!mongoose.Types.ObjectId.isValid(playlistId)) {
-    throw new ApiError(400, "Playlist Id not valid");
-  }
-
-  const deletedPlaylist = await Playlist.findByIdAndDelete(playlistId);
-  if (!deletedPlaylist) {
-    throw new ApiError(400, "Playlist Not found");
-  }
-  return res
-    .status(200)
-    .json(
-      new ApiResponse(200, deletedPlaylist, "playlist deleted successfully")
-    );
-    
-})
-
-const updatePlaylist = asyncHandler(async (req, res) => {
-    const { playlistId } = req.params;
-    const { name, description } = req.body;
-  
-    if (!playlistId) {
-      throw new ApiError(400, "Playlist Id not found");
-    }
-    if (!mongoose.Types.ObjectId.isValid(playlistId)) {
-      throw new ApiError(400, "Playlist Id not valid");
-    }
-  
-    if (!name && !description) {
-      throw new ApiError(400, "Name or description must be provided");
-    }
-  
-    const playlist = await Playlist.findById(playlistId);
-    if (!playlist) {
-      throw new ApiError(400, "Playlist not found");
-    }
-  
-    const updatedPlaylist = await Playlist.findByIdAndUpdate(
-      playlist._id,
-      {
-        name: name ? name : playlist.name,
-        description: description ? description : playlist.description,
-      },
-      { new: true }
-    );
-  
-    if (!updatePlaylist) {
-      throw new ApiError(500, "playlist cannot be updated");
-    }
-    return res
-      .status(200)
-      .json(
-        new ApiResponse(200, updatedPlaylist, "playlist updated successfully")
-      );
-})
-
-// this function is check the user videos is are avlaible in playlists or not
-
-const getVideoSavePlaylists = asyncHandler(async (req, res) => {
-  const { videoId } = req.params;
-
-  if (!isValidObjectId(videoId))
-    throw new ApiError(400, "Valid videoId required");
-
-  const playlists = await Playlist.aggregate([
-    {
-      $match: {
-        owner: new mongoose.Types.ObjectId(req.user?._id),
-      },
-    },
-    {
-      $project: {
-        name: 1,
-        isVideoPresent: {
+        "channel.isSubscribed": {
           $cond: {
-            if: { $in: [new mongoose.Types.ObjectId(videoId), "$videos"] },
+            if: { $in: [req.user?._id, "$channelSubscribers.subscriber"] },
             then: true,
             else: false,
           },
         },
+        // channel subscriber count
+        "channel.subscribersCount": {
+          $size: "$channelSubscribers",
+        },
+      },
+    },
+    {
+      $group: {
+        _id: "subscriber",
+        subscribedChannels: {
+          $push: "$channel",
+        },
       },
     },
   ]);
 
+  const users =
+    subscribedChannels?.length > 0
+      ? subscribedChannels[0].subscribedChannels
+      : [];
+
   return res
     .status(200)
-    .json(new ApiResponse(200, playlists, "Playlists sent successfully"));
+    .json(
+      new ApiResponse(200, users, "Subscribed channel list sent successfully")
+    );
 });
 
-
-export {
-    createPlaylist,
-    getUserPlaylists,
-    getPlaylistById,
-    addVideoToPlaylist,
-    removeVideoFromPlaylist,
-    deletePlaylist,
-    updatePlaylist,
-    getVideoSavePlaylists
-}
+export { toggleSubscription, getUserChannelSubscribers, getSubscribedChannels };

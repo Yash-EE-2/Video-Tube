@@ -2,6 +2,17 @@ import mongoose, {Schema} from "mongoose";
 import bcrypt from "bcrypt"
 import jwt from "jsonwebtoken"
 
+const linkSchema = new Schema({
+  name: {
+    type: String,
+    require: true,
+  },
+  url: {
+    type: String,
+    require: true,
+  },
+});
+
 const userSchema = new Schema(
     {
         username: {
